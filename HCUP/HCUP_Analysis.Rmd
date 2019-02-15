@@ -1,0 +1,340 @@
+---
+title: "HCUP Data Analysis - National Inpatient Sample"
+output:
+  html_document:
+    df_print: paged
+---
+
+## Load Packages
+```{r}
+library(reshape)
+library(stringr)
+library(ggplot2)
+library(sqldf)
+library(ggrepel)
+library(cowplot)
+library(trend)
+library(ggthemes)
+library(grid)
+library(extrafont)
+  # Make sure to run font_import() command in console if not done previously
+library(scales)
+```
+
+## Assign Functions
+```{r}
+# Lagpad function 
+lagpad <- function(x, k) {
+    if (!is.vector(x)) 
+        stop('x must be a vector')
+    if (!is.numeric(x)) 
+        stop('x must be numeric')
+    if (!is.numeric(k))
+        stop('k must be numeric')
+    if (1 != length(k))
+        stop('k must be a single number')
+    c(rep(NA, k), x)[1 : length(x)]
+}
+
+# Graphics Theme function
+econ_theme <-  function() {
+  theme(plot.title = element_text(family = 'Century Gothic', hjust=0,size=18,margin=margin(-7,0,10,0)),
+    plot.subtitle = element_text(family = 'Century Gothic',size=12, margin=margin(-2,0,3,0)),
+    plot.caption = element_text(family = 'Century Gothic', size=9, hjust = 0,margin=margin(34,0,-45,0)),  
+    axis.text = element_text(face='bold', family = 'Century Gothic'),
+    axis.title.x = element_text(family = 'Century Gothic',face = 'bold', margin=margin(12,0,-12,0)),
+    axis.title.y = element_text(family = 'Century Gothic',face = 'bold', margin=margin(0,12,0,0)),
+    plot.margin = margin(1,1.5,2,0.5, 'cm'))
+}
+```
+
+
+## 1) Analyze National Inpatient Sample - Major Diagnositic Categories (MDC)
+Data was sourced from HCUPnet - AHRQ's self-service query tool for simple aggregate analysis of HCUP data assets. This workbook uses the National Inpatient Sample, a clustered sample of inpatient claims throughout the US.
+Query options include: 1) Inpatient Setting, 2) All Discharge Data. 3) By by Year. A 2nd query was run with same parameters by MDC. HMO Enrollment data was also obtained.
+
+Data output was formatted to remove total number of discharges and any notes, leaving year and rate of discharges per 100,000. 
+```{r}
+# Infile data
+MDC_filepath <- "X:\\General Folder\\HC_Data\\HCUP_2018\\HCUP_MDC.txt"
+MDCse_filepath <- "X:\\General Folder\\HC_Data\\HCUP_2018\\HCUP_MDCse.txt"
+MDC_ALOS_filepath <- "X:\\General Folder\\HC_Data\\HCUP_2018\\MDC_ALOS.txt"
+MDCse_ALOS_filepath <- "X:\\General Folder\\HC_Data\\HCUP_2018\\MDC_ALOSse.txt"
+MDC_all_filepath <- "X:\\General Folder\\HC_Data\\HCUP_2018\\Inpat_discharge_alos_ttl.txt"
+
+MDC <- read.table(MDC_filepath,header= TRUE, sep = '\t', na.strings="*")
+MDCse <- read.table(MDCse_filepath,header= TRUE, sep = '\t', na.strings="*")
+MDC_ALOS <- read.table(MDC_ALOS_filepath,header= TRUE, sep = '\t', na.strings="*")
+MDC_ALOSse <- read.table(MDCse_ALOS_filepath,header= TRUE, sep = '\t', na.strings="*")
+MDC_all <- read.table(MDC_all_filepath,header= TRUE, sep = '\t', na.strings="*")
+
+MDC_Datasets <- c("MDC", "MDCse", "MDC_ALOS", "MDC_ALOSse")
+
+# Remove MDC 0 - this is all noise
+MDC <- MDC[!(MDC$MDC=="MDC: 0 Principal Dx Can Not Be Assigned To Mdc (Invalid Or Pre Mdc)"),]
+MDCse <- MDCse[!(MDCse$MDC=="MDC: 0 Principal Dx Can Not Be Assigned To Mdc (Invalid Or Pre Mdc)"),]
+MDC_ALOS <- MDC_ALOS[!(MDC_ALOS$MDC=="MDC: 0 Principal Dx Can Not Be Assigned To Mdc (Invalid Or Pre Mdc)"),]
+MDC_ALOSse <- MDC_ALOSse[!(MDC_ALOSse$MDC=="MDC: 0 Principal Dx Can Not Be Assigned To Mdc (Invalid Or Pre Mdc)"),]
+
+# Reshape Data, and format
+MDC_long <- melt(MDC, id="MDC")
+colnames(MDC_long) <- c("MDC","year","discharge")
+
+MDC_selong <- melt(MDCse, id="MDC")
+colnames(MDC_selong) <- c("MDC","year","discharge_se")
+
+MDC_ALOS <- melt(MDC_ALOS, id="MDC")
+colnames(MDC_ALOS) <- c("MDC","year","ALOS")
+
+MDC_ALOSse <- melt(MDC_ALOSse, id="MDC")
+colnames(MDC_ALOSse) <- c("MDC","year","ALOS_se")
+
+MDC_long$year <- substr(MDC_long$year,2,5)
+MDC_long$year <- as.numeric(MDC_long$year)
+
+MDC_selong$year <- substr(MDC_selong$year,2,5)
+MDC_selong$year <- as.numeric(MDC_selong$year)
+
+MDC_ALOS$year <- substr(MDC_ALOS$year,2,5)
+MDC_ALOS$year <- as.numeric(MDC_ALOS$year)
+
+MDC_ALOSse$year <- substr(MDC_ALOSse$year,2,5)
+MDC_ALOSse$year <- as.numeric(MDC_ALOSse$year)
+
+MDC_long$short_name <- substr(MDC_long$MDC,1,7)
+
+# Merge Data into one long data set
+MDC_long <- sqldf('SELECT a.*, b.discharge_se
+              FROM MDC_long AS A INNER JOIN MDC_selong AS B 
+              ON a.MDC = b.MDC
+              AND a.year = b.year
+             ')
+
+MDC_long <- sqldf('SELECT a.*, b.ALOS
+              FROM MDC_long AS A INNER JOIN MDC_ALOS AS B 
+              ON a.MDC = b.MDC
+              AND a.year = b.year
+             ')
+
+MDC_long <- sqldf('SELECT a.*, b.ALOS_se
+              FROM MDC_long AS A INNER JOIN MDC_ALOSse AS B 
+              ON a.MDC = b.MDC
+              AND a.year = b.year
+             ')
+
+
+# Calculate 95% CI bounds from SE
+MDC_long$discharge_CI <- 1.96*MDC_long$discharge_se
+MDC_long$ALOS_CI <- 1.96*MDC_long$ALOS_se
+
+# Calculate percent change label for discharge total table
+MDC_all$discharge_rate_perc_change <- paste(as.character(signif((MDC_all$Discharge_Rate - (lagpad(MDC_all$Discharge_Rate, 1))) / (lagpad(MDC_all$Discharge_Rate, 1))*100, digits=2)),"%")
+
+MDC_all$discharge_rate_perc_change[MDC_all$discharge_rate_perc_change == "NA %"] <- ""
+
+MDC_all$discharge_perc_change <- paste(as.character(signif((MDC_all$Total_Discharges - (lagpad(MDC_all$Total_Discharges, 1))) / (lagpad(MDC_all$Total_Discharges, 1))*100, digits=2)),"%")
+
+MDC_all$discharge_perc_change[MDC_all$discharge_perc_change == "NA %"] <- ""
+
+# Calculate Bed Days
+MDC_all$bed_days <- MDC_all$Total_Discharges * MDC_all$LOS
+
+```
+
+
+Plot Total Inpatient Discharge Rate per 100,000
+```{r fig.width=10, fig.height=15}
+
+# Plot Discharge Rate
+plot <- ggplot(MDC_all, aes(x=Year, y=Discharge_Rate, label = discharge_rate_perc_change
+                     )) + 
+  geom_line(col='#014d64', size = 1.2) + 
+  geom_point(col='#014d64', size = 2) + 
+  geom_text(check_overlap = TRUE, angle = 65, nudge_y = 125, nudge_x = 0, family = 'Century Gothic') + 
+  annotate("text", label = "Labels = % Year-over-Year Change", x = 1997, y = 11650, 
+           size = 5, colour = "black", family = 'Century Gothic') +  
+  labs(title = 'U.S. Inpatient Discharges per 100,000', 
+       subtitle = 'HMO enrollment or other changes in healthcare financing could help explain changes in inpatient utilization',
+       caption = 'Source: Agency for Healthcare Quality - HCUP National Inpatient Sample.') + 
+  labs(x='Year', y='Inpatient Discharges per 100,000 Population') + 
+  scale_y_continuous(label=comma) + 
+  theme_economist_white() + econ_theme()
+
+print(plot + theme(legend.position = "none"))
+grid.rect(x=0.026, y=0.9,hjust = 1,vjust=0,gp=gpar(fill='#014d64',lwd=0))# Add Blue rectangle to the graph
+
+
+```
+
+Plot All Inpatient Discharges
+```{r fig.width=10}
+
+# Plot all Discharges
+plot <- ggplot(MDC_all, aes(x=Year, y=Total_Discharges, label = discharge_perc_change
+                     )) + 
+  geom_line(col='#014d64', size = 1.2) + 
+  geom_point(col='#014d64', size = 2) + 
+  geom_text(check_overlap = TRUE, angle = 65, nudge_y = 700000, nudge_x = 0, family = 'Century Gothic') + 
+  annotate("text", label = "Labels = % Year-over-Year Change", x = 1998, y = 32500000, 
+           size = 5, colour = "black", family = 'Century Gothic') +  
+  labs(title = 'Total U.S. Inpatient Discharges', 
+       subtitle = 'The total number of U.S. acute inpatient discharges have been in decline since 2010', 
+       caption = 'Source: Agency for Healthcare Quality - HCUP National Inpatient Sample.') + 
+  labs(x='Year', y='Acute Inpatient Discharges') + 
+  scale_y_continuous(label=comma) + 
+  theme_economist_white() + econ_theme()
+
+print(plot + theme(legend.position = "none"))
+grid.rect(x=0.026, y=0.9,hjust = 1,vjust=0,gp=gpar(fill='#014d64',lwd=0))# Add Blue rectangle to the graph
+
+```
+
+Plot Total ALOS
+```{r fig.width=10}
+
+# Plot Discharge Rate
+plot <- ggplot(MDC_all, aes(x=Year, y=LOS
+                     )) + 
+  geom_line(col='#014d64', size = 1.2) + 
+  geom_point(col='#014d64', size = 2) + 
+  labs(title = 'Average Length of Stay', 
+       subtitle = 'Length of hospitals stays decreased sharply prior to 2000', 
+       caption = 'Source: Agency for Healthcare Quality - HCUP National Inpatient Sample.') + 
+  labs(x='Year', y='Average Length of Stay (Days)') + 
+  theme_economist_white() + econ_theme()
+
+print(plot + theme(legend.position = "none"))
+grid.rect(x=0.026, y=0.9,hjust = 1,vjust=0,gp=gpar(fill='#014d64',lwd=0))# Add Blue rectangle to the graph
+
+```
+
+Plot Bed Days
+```{r fig.width=10}
+
+# Plot Discharge Rate
+plot <- ggplot(MDC_all, aes(x=Year, y=bed_days
+                     )) + 
+  geom_line(col='#014d64', size = 1.2) + 
+  geom_point(col='#014d64', size = 2) + 
+  labs(title = 'U.S. Bed Days (Estimated)', 
+       subtitle = 'Averge Length of Stay * Discharges - likely overestimate of actual bed days', 
+       caption = 'Source: Agency for Healthcare Quality - HCUP National Inpatient Sample.') + 
+  labs(x='Year', y='Bed Days') + 
+  scale_y_continuous(label=comma) + 
+  theme_economist_white() + econ_theme()
+
+print(plot + theme(legend.position = "none"))
+grid.rect(x=0.026, y=0.9,hjust = 1,vjust=0,gp=gpar(fill='#014d64',lwd=0))# Add Blue rectangle to the graph
+
+```
+
+Plot Discharge Rate by MDC
+```{r fig.width=10, fig.height=22}
+# Set Colors
+cbbPalette <- c("#000000", "#666600", "#000033", "#00FF33", "#CC6600", "#FF6699", "#D55E00", "#CC79A7", "#99CC00", "#00CC99", "#00FF33", "#00CCFF", "#0033FF", "#3300CC", "#9900FF", "#CC33CC", "#FFCC33", "#003333", "#666600", "#FF9933", "#3399FF", "#CC0099", "#CC0000", "#330033", "#0000FF", "#FFFF99")
+
+# Summary Plot, to get sense of scale
+MDC_long$end_label <- MDC_long$short_name
+MDC_long$end_label[MDC_long$year < 2015] <- ""
+
+plot <- ggplot(MDC_long, aes(x=year, y=discharge, group=MDC, color=MDC, label = end_label
+                     )) + 
+  geom_line(position = 'jitter', size = 1) + 
+  geom_text_repel(segment.color = "black", family = 'Century Gothic') + 
+  scale_colour_manual(values=cbbPalette) + 
+  labs(title = 'Inpatient Discharges per 100k, by Major Diagnostic Category (MDCs)', 
+       subtitle = 'With some exception, the rate of discharges for most Major Diagnostic Categories have been in decline', 
+       caption = 'Source: Agency for Healthcare Quality - HCUP National Inpatient Sample.') + 
+  labs(x='Year', y='Inpatient Discharges per 100,000 Population') + 
+  scale_y_continuous(label=comma) + 
+  theme_economist_white() + econ_theme()
+
+print(plot + theme(legend.position = "bottom") + guides(col = guide_legend(nrow=25)))
+grid.rect(x=0.026, y=0.9,hjust = 1,vjust=0,gp=gpar(fill='#014d64',lwd=0))# Add Blue rectangle to the graph
+
+```
+
+Plot ALOS by MDC
+```{r fig.width=10, fig.height=12}
+plot <- ggplot(MDC_long, aes(x=year, y=ALOS, group=MDC, color=MDC, label = end_label
+                     )) + 
+  geom_line(position = 'jitter', size = 1) + 
+  geom_text_repel(segment.color = "black", family = 'Century Gothic') + 
+  scale_colour_manual(values=cbbPalette) + 
+  labs(title = 'Average Length of Stay (ALOS), by Major Diagnostic Category (MDCs)', 
+       subtitle = 'With some exception, average length of stay has decreased over time', 
+       caption = 'Source: Agency for Healthcare Quality - HCUP National Inpatient Sample.') + 
+  labs(x='Year', y='Average length of stay (ALOS)') + 
+  scale_y_continuous(label=comma) + 
+  theme_economist_white() + econ_theme()
+
+print(plot + theme(legend.position = "none") + guides(col = guide_legend(nrow=25)))
+grid.rect(x=0.026, y=0.9,hjust = 1,vjust=0,gp=gpar(fill='#014d64',lwd=0))# Add Blue rectangle to the graph
+```
+
+Plot Discharge Rate and ALOS by MDC w. 95% Confidence Intervals
+```{r, fig.width=10, fig.height=12}
+# Plot by MDC, with 95% CIs
+MDCs <- unique(MDC_long$MDC)
+
+# Get end and start of ALOS for label
+MDC_long$ALOS_label <- signif(MDC_long$ALOS,2)
+MDC_long$ALOS_label[MDC_long$year < 2015 & MDC_long$year > 1993] <- ""
+
+
+for (i in seq_along(MDCs)) {
+  
+  plot <- ggplot(subset(MDC_long, MDC_long$MDC==MDCs[i]), aes(x=year, y=discharge, group=MDC
+                       )) + 
+    geom_line(col='#014d64', linetype = 2, size = 1) + 
+    geom_ribbon(alpha=0.2, linetype = 2, aes(ymin=discharge-discharge_CI, ymax=discharge+discharge_CI)) + 
+    ggtitle(paste(MDCs[i]," w. 95% CI")) + 
+    scale_y_continuous(label=comma) +
+    labs(x='Year', y='Inpatient discharges per 100,000 population') + 
+    theme_economist_white() + econ_theme()
+
+  
+  plot2 <- ggplot(subset(MDC_long, MDC_long$MDC==MDCs[i]), aes(x=year, y=ALOS, group=MDC, label=ALOS_label
+                       )) + 
+    geom_line(col='#014d64', linetype = 2, size = 1) + 
+    geom_ribbon(alpha=0.2, aes(ymin=ALOS-ALOS_CI, ymax=ALOS+ALOS_CI), linetype = 2) + 
+    geom_text_repel(segment.color = "black", nudge_y=1, family = 'Century Gothic') + 
+    ggtitle("Average Length of Stay (ALOS) w. 95% CI") + 
+    scale_y_continuous(limits = c(0, 16)) +
+    labs(x='Year', y='Average length of stay (ALOS)',
+    caption = 'Source: Agency for Healthcare Quality - HCUP National Inpatient Sample.') + 
+    theme_economist_white() + econ_theme()
+
+  # Cowplot grids together
+  print(cowplot::plot_grid(plot, plot2, nrow=2, align="v", axis='1', rel_heights = c(.6,.4)))
+  grid.rect(x=0.026, y=0.9,hjust = 1,vjust=0,gp=gpar(fill='#014d64',lwd=0))# Add Blue rectangle to the graph
+
+}
+
+```
+
+Summary
+```{r}
+
+# Pull Summary Stats
+MDC$Diff <- MDC$X2015 - MDC$X1993
+MDC$perc_change <- MDC$Diff/MDC$X2015
+MDC <- sqldf('SELECT a.*, b.X1993 AS X1993se, b.X2015 AS X2015se
+              FROM MDC AS A LEFT JOIN MDCse AS B
+              ON a.MDC = b.MDC
+          ')
+
+# Mann-Kendall Test, since 2010
+
+MDC10 <- subset(MDC_long,year>2009)
+
+for (i in seq_along(MDCs)) {
+  x <- subset(MDC10, MDC10$MDC==MDCs[i])
+  print(MDCs[i])
+  x <- as.ts(x[c("discharge")])
+  pval <- mk.test(x, alternative = "two.sided")
+  print(pval$p.value)
+}
+
+```
+

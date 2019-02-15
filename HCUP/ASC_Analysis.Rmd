@@ -1,0 +1,140 @@
+---
+title: "HCUP Data Analysis - Ambulatory Surgical Center Dataset"
+output: html_notebook
+---
+
+## Load Packages
+```{r}
+library(reshape)
+library(stringr)
+library(ggplot2)
+library(sqldf)
+library(ggrepel)
+library(cowplot)
+library(trend)
+library(ggthemes)
+library(grid)
+library(extrafont)
+  # Make sure to run font_import() command in console if not done previously
+library(scales)
+```
+
+```{r}
+# Lagpad function 
+lagpad <- function(x, k) {
+    if (!is.vector(x)) 
+        stop('x must be a vector')
+    if (!is.numeric(x)) 
+        stop('x must be numeric')
+    if (!is.numeric(k))
+        stop('k must be numeric')
+    if (1 != length(k))
+        stop('k must be a single number')
+    c(rep(NA, k), x)[1 : length(x)]
+}
+
+# Graphics Theme function
+econ_theme <-  function() {
+  theme(plot.title = element_text(family = 'Century Gothic', hjust=0,size=18,margin=margin(-7,0,10,0)),
+    plot.subtitle = element_text(family = 'Century Gothic',size=12, margin=margin(-2,0,3,0)),
+    plot.caption = element_text(family = 'Century Gothic', size=9, hjust = 0,margin=margin(34,0,-45,0)),  
+    axis.text = element_text(face='bold', family = 'Century Gothic'),
+    axis.title.x = element_text(family = 'Century Gothic',face = 'bold', margin=margin(12,0,-12,0)),
+    axis.title.y = element_text(family = 'Century Gothic',face = 'bold', margin=margin(0,12,0,0)),
+    plot.margin = margin(1,1.5,2,0.5, 'cm'))
+}
+```
+
+Infile Data:
+1) ASC Procedures Data-  Data was sourced from HCUPnet, AHRQ's self-service query tool for simple aggregate analysis of HCUP data assets. This workbook uses the Ambulatory Surgery Data, a clustered sample of ambulatory surgeries from 29 reporting states.
+Query options include: 1) Ambulatory Setting, 2) All Discharge Data. 3) By by Year. Note that counts for 2015 are currently missing.
+2) CCS-ICD-MDC Data - ARHQ's map of CCS to MDC, ICDs to be added at a later date.
+3) Pseudo-MDC/Specialty - Map CCS to a Specialty/MDC. This is a very rough mapping - eventually consider refinements.
+```{r}
+# ASC Surgery Volume and Percent Data
+ASC_filepath <- "X:\\General Folder\\HC_Data\\HCUP_2018\\ASC_CCS_Procedures.txt"
+  ASC <- read.table(ASC_filepath,header= TRUE, sep = '\t', na.strings="*", )
+  
+ASC$CCS <- as.factor(ASC$CCS)
+
+# CS-ICD-MDC Data
+Mappings_filepath <- "X:\\General Folder\\HC_Data\\HCUP_2018\\CCS_Mapping.txt"
+  mappings <- read.table(Mappings_filepath,header= TRUE, sep = '\t', na.strings="*", )
+
+# Pseudo specialty name
+PseudoMDC_filepath <- "X:\\General Folder\\HC_Data\\HCUP_2018\\PseudoMDC.txt"
+  PseudoMDC <- read.table(PseudoMDC_filepath,header= TRUE, sep = '\t', na.strings="*", )
+
+```
+
+
+Transform Data
+```{r}
+
+ASC <- sqldf(' SELECT a.*, b.MDC
+              FROM ASC as a LEFT JOIN mappings as b
+              ON a.CCS = b.CCS
+')
+
+ASC <- sqldf(' SELECT a.*, b.Specialty
+              FROM ASC as a LEFT JOIN PseudoMDC as b
+              ON a.MDC = b.MDC
+')
+
+ASC$perc_cases_ASC <- ASC$perc_cases_ASC * (1/100)
+
+```
+
+
+```{r fig.width=11, fig.height=13}
+# Set Colors
+
+cbbPalette <- c("#000000", "#666600", "#000033", "#00FF33", "#CC6600", "#FF6699", "#D55E00", "#CC79A7", "#99CC00", "#00CC99", "#00FF33", "#00CCFF", "#0033FF", "#3300CC", "#9900FF", "#CC33CC", "#FFCC33", "#003333", "#666600", "#FF9933", "#3399FF", "#CC0099", "#CC0000", "#330033", "#0000FF", "#FFFF99")
+
+# Summary Plot, to get sense of scale
+ASC$end_label <- ASC$CCS._label
+ASC$end_label[ASC$year < 2015] <- ""
+
+ASC$front_label <- ASC$CCS._label
+ASC$front_label[ASC$year > 2012] <- ""
+
+
+Specialties <- unique(ASC$Specialty)
+
+for (i in seq_along(Specialties)) {
+
+plot <- ggplot(subset(ASC, ASC$Specialty==Specialties[i]), aes(x=year, y=perc_cases_ASC, group=CCS._label, color=CCS._label, label = end_label
+                     )) + 
+  geom_line(position = 'jitter', size = 1) + 
+  geom_text_repel(segment.color = "black", family = 'Century Gothic') +
+  # scale_colour_manual(values=cbbPalette) + 
+  ggtitle(paste(Specialties[i]," - Percent of Surgeries in Ambulatory Setting")) + 
+  labs(x='Year', y='% of procedures in ambulatory setting') +
+  scale_y_continuous(label=percent, limits = c(0, 1)) +
+  scale_x_continuous(limits = c(2011, 2015)) +
+  theme_economist_white() + econ_theme() + theme(legend.position="none")
+
+
+plot2 <- ggplot(subset(ASC, ASC$Specialty==Specialties[i]), aes(x=year, y=surgeries_asc, group=CCS._label, color=CCS._label, label = front_label
+                     )) + 
+  geom_line(position = 'jitter', size = 1) + 
+  geom_text_repel(segment.color = "black", family = 'Century Gothic') +
+  # scale_colour_manual(values=cbbPalette) + 
+  ggtitle("Number of Surgeries in Ambulatory Setting") + 
+  labs(caption = 'Source: Agency for Healthcare Quality - HCUP State Ambulatory Surgery Database (29 reporting states).') + 
+  labs(x='Year', y='number of procedures in ambulatory setting') +
+  scale_y_continuous(label=comma) +
+  scale_x_continuous(limits = c(2011, 2015)) +
+  theme_economist_white() + econ_theme() + theme(legend.position="none")
+
+
+  # Cowplot grids together
+  print(cowplot::plot_grid(plot, plot2, nrow=2, align="v", axis='1', rel_heights = c(.5,.5)))
+  grid.rect(x=0.026, y=0.9,hjust = 1,vjust=0,gp=gpar(fill='#014d64',lwd=0))# Add Blue rectangle to the graph
+
+
+}
+
+```
+```
+
