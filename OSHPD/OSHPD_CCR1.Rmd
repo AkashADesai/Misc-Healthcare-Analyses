@@ -1,12 +1,12 @@
 ---
 title: "California OSPHD Financial Data - Point in time Market CCRs"
-output: html_notebook
+output: html_document
+date: February 15, 2019
 ---
 
 # Load Packages
 ```{r}
 library(knitr)
-library(gdata)
 library(sqldf)
 library(Hmisc)
 library(PerformanceAnalytics)
